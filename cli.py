@@ -1,4 +1,4 @@
-"""``hermes a11y …`` subcommands and the ``/a11y`` slash command."""
+"""``a11y …`` CLI subcommands and the ``/a11y`` slash command."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def run_doctor(rt: Runtime) -> dict[str, Any]:
 
         add("playwright python package", True, "importable")
     except ImportError:
-        add("playwright python package", False, "missing - reinstall the plugin (hermes plugins install …) or `pip install playwright`")
+        add("playwright python package", False, "missing - install the playwright package into this Python environment")
     try:
         rt.store
         add("scan history database", True, str(rt.store.data_dir))
@@ -42,7 +42,8 @@ def run_doctor(rt: Runtime) -> dict[str, Any]:
         add("scan history database", False, repr(exc))
 
     s = rt.settings()
-    add("allowed remote origins", True, ", ".join(s.allowed_origins) or "none (loopback only)")
+    add("allowed remote origins", True, ", ".join(s.allowed_origins) or "none (local files only)")
+    add("loopback URLs", True, "allowed (allow_loopback: true)" if s.allow_loopback else "refused (default)")
     with tempfile.TemporaryDirectory() as tmp:
         (Path(tmp) / "index.html").write_text(
             '<!doctype html><html lang="en"><head><title>Doctor probe</title></head><body><main><h1>Probe</h1>'
@@ -62,7 +63,8 @@ def run_doctor(rt: Runtime) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             add("browser + axe end-to-end", False, f"{type(exc).__name__}: {exc}")
     ok = all(c["ok"] for c in checks)
-    hint = "" if ok else "Fix the failing checks; if no browser is installed run: hermes a11y install"
+    hint = "" if ok else ("Fix the failing checks. If no browser is installed, an administrator must provide one "
+                          "(browser_executable setting, or Playwright's Chromium in the environment).")
     return {"ok": ok, "checks": checks, "hint": hint}
 
 
@@ -77,7 +79,7 @@ def _print_doctor(res: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------------------------
 def setup_parser(parser: Any) -> None:
     sub = parser.add_subparsers(dest="a11y_cmd")
-    sub.add_parser("install", help="Download Playwright's Chromium (one-time, from Playwright's official CDN)")
+    sub.add_parser("install", help="Download Playwright's Chromium (only when the allow_browser_install setting is true)")
     sub.add_parser("doctor", help="Run a real end-to-end self-test")
     p = sub.add_parser("allow", help="Authorise a remote origin you own, e.g. https://staging.example.com")
     p.add_argument("origin")
@@ -101,6 +103,10 @@ def make_cli_handler(rt: Runtime, ctx: Any):
     def handle(args: Any) -> int:
         cmd = getattr(args, "a11y_cmd", None)
         if cmd == "install":
+            if not rt.settings().allow_browser_install:
+                print("Browser download is disabled (allow_browser_install: false). Use the browser the environment "
+                      "provides, or set browser_executable.")
+                return 2
             print("Downloading Chromium via `playwright install chromium` (official Playwright CDN, ~150 MB)…")
             return subprocess.call([sys.executable, "-m", "playwright", "install", "chromium"])
         if cmd == "doctor":
@@ -119,11 +125,11 @@ def make_cli_handler(rt: Runtime, ctx: Any):
             if cmd == "revoke":
                 cur = [o for o in cur if o != origin]
             ctx.set_config("allowed_origins", cur)
-            print(f"{'Authorised' if cmd == 'allow' else 'Revoked'} {origin}. Current: {cur or 'loopback only'}")
+            print(f"{'Authorised' if cmd == 'allow' else 'Revoked'} {origin}. Current: {cur or 'local files only'}")
             print("Note: redirects to other hosts (e.g. example.com -> www.example.com) are blocked unless you authorise both.")
             return 0
         if cmd == "origins":
-            print("\n".join(rt.settings().allowed_origins) or "(none - loopback only)")
+            print("\n".join(rt.settings().allowed_origins) or "(none - local files only)")
             return 0
         if cmd == "scan":
             res = service.scan(rt.store, rt.settings(), args.target, viewport=args.viewport)
@@ -148,9 +154,9 @@ def make_cli_handler(rt: Runtime, ctx: Any):
                     shutil.rmtree(dest)
                 shutil.copytree(DEMO_DIR, dest)
                 print(f"Copied the inaccessible demo site to {dest}")
-            print(f'\nTry in Hermes:\n  Audit {dest} with A11Y Lens, fix the issues in the source, rescan, and prove it improved.')
+            print(f'\nTry asking your agent:\n  Audit {dest} with A11Y Lens, fix the issues in the source, rescan, and prove it improved.')
             return 0
-        print("usage: hermes a11y {install|doctor|scan|scans|compare|allow|revoke|origins|demo}")
+        print("usage: a11y {install|doctor|scan|scans|compare|allow|revoke|origins|demo}")
         return 0
 
     return handle

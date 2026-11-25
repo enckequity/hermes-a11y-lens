@@ -31,7 +31,7 @@ def register(ctx) -> None:
     ctx.register_cli_command(
         name="a11y", help="A11Y Lens: install browser, self-test, authorise origins, scan",
         setup_fn=setup_parser, handler_fn=make_cli_handler(rt, ctx),
-        description="Manage A11Y Lens (hermes a11y install | doctor | allow <origin> | scan <target> | compare <a> <b>)",
+        description="Manage A11Y Lens (a11y install | doctor | allow <origin> | scan <target> | compare <a> <b>)",
     )
     skill = _HERE / "skills" / "a11y-repair" / "SKILL.md"
     if skill.exists():

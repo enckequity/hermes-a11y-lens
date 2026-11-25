@@ -22,6 +22,8 @@ MAX_NODES_IN_SCAN_REPLY = 3
 @dataclass
 class Settings:
     allowed_origins: list[str] = field(default_factory=list)
+    allow_loopback: bool = False
+    allow_browser_install: bool = False
     browser_executable: str = ""
     browser_channel: str = ""
     chromium_args: list[str] = field(default_factory=list)
@@ -61,7 +63,7 @@ def scan(store: Store, settings: Settings, url: str, viewport: str | None = None
          timeout_s: int | None = None, note: str | None = None, cwd: Path | None = None) -> dict[str, Any]:
     try:
         execution = runner.execute_scan(
-            url, allowed_origins=settings.allowed_origins, viewport=viewport,
+            url, allowed_origins=settings.allowed_origins, allow_loopback=settings.allow_loopback, viewport=viewport,
             timeout_s=timeout_s or settings.default_timeout_s,
             browser_executable=settings.browser_executable or None, browser_channel=settings.browser_channel or None,
             chromium_args=settings.chromium_args, cwd=cwd,

@@ -2,18 +2,18 @@
 from a11y_lens.policy import PolicyError, normalize_origin, validate_target
 
 
-def refused(url, allowed=(), code=None):
+def refused(url, allowed=(), code=None, **kw):
     with pytest.raises(PolicyError) as e:
-        validate_target(url, allowed)
+        validate_target(url, allowed, **kw)
     if code:
         assert e.value.code == code
 
 
-def test_loopback_allowed_by_default():
-    t = validate_target("http://localhost:3000/x")
+def test_loopback_allowed_when_opted_in():
+    t = validate_target("http://localhost:3000/x", allow_loopback=True)
     assert t.loopback and t.pinned_hosts == {"localhost": "127.0.0.1"}
-    assert validate_target("http://127.0.0.1:8080").loopback
-    assert validate_target("http://[::1]:8080").loopback
+    assert validate_target("http://127.0.0.1:8080", allow_loopback=True).loopback
+    assert validate_target("http://[::1]:8080", allow_loopback=True).loopback
 
 
 def test_remote_refused_unless_authorised():
@@ -58,7 +58,7 @@ def test_localhost_name_hijacked_to_public_ip_refused(monkeypatch):
     import ipaddress
     from a11y_lens import policy
     monkeypatch.setattr(policy, "resolve_host", lambda h: [ipaddress.ip_address("8.8.8.8")])
-    refused("http://localhost:3000", code="loopback_hijack")
+    refused("http://localhost:3000", code="loopback_hijack", allow_loopback=True)
 
 
 def test_noncanonical_ip_encodings_fail_closed():

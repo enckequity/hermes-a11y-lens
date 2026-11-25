@@ -44,6 +44,19 @@ _ENV_ALLOW = (
 )
 
 
+# Images that stage a pinned Chromium (e.g. under PLAYWRIGHT_BROWSERS_PATH without Playwright's
+# separate headless shell) record the binary here.  Used only as a launch fallback; never downloaded.
+IMAGE_CHROMIUM_PATH_FILE = Path("/etc/hermes/chromium-executable-path")
+
+
+def image_chromium_executable() -> str | None:
+    try:
+        value = IMAGE_CHROMIUM_PATH_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value if value and os.path.isfile(value) and os.access(value, os.X_OK) else None
+
+
 class ScanError(Exception):
     def __init__(self, code: str, message: str, details: Any = None):
         super().__init__(message)
@@ -81,14 +94,30 @@ def parse_viewport(spec: str | None) -> tuple[str, dict[str, Any]]:
 # ---------------------------------------------------------------------------------------------
 # Local static server (so Hermes can audit a file or folder with zero setup)
 # ---------------------------------------------------------------------------------------------
+# Only static web assets are served: the folder holding a page may also hold config, databases or
+# credentials (.env, *.json, *.yaml, *.db), and the page's own script could read them same-origin and
+# copy them into the DOM, where they would surface in findings.
+SERVED_SUFFIXES = frozenset({
+    ".html", ".htm", ".css", ".js", ".mjs", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif",
+    ".ico", ".bmp", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".mp4", ".webm", ".ogg", ".mp3", ".wav",
+    ".vtt",
+})
+
+
 class _ContainedHandler(http.server.SimpleHTTPRequestHandler):
-    """Serves one directory, refusing symlink/`..` escapes and silencing logs."""
+    """Serves one directory, refusing symlink/`..` escapes, dotfiles and non-web files; silences logs."""
 
     root: str = "."
 
     def translate_path(self, path: str) -> str:  # noqa: D401
         resolved = os.path.realpath(super().translate_path(path))
         base = os.path.realpath(self.root)
+        forbidden = os.path.join(base, "__forbidden__")
+        rel_parts = os.path.relpath(resolved, base).split(os.sep) if resolved != base else []
+        if any(part.startswith(".") and part != ".." for part in rel_parts):
+            return forbidden
+        if os.path.isfile(resolved) and os.path.splitext(resolved)[1].lower() not in SERVED_SUFFIXES:
+            return forbidden
         # Windows: case-insensitive filesystem; normcase makes containment check correct on Windows
         # while preserving POSIX behavior (normcase is a no-op there).
         if os.path.normcase(resolved) == os.path.normcase(base):
@@ -99,6 +128,10 @@ class _ContainedHandler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, *args: Any) -> None:  # silence
         return
+
+    def list_directory(self, path: Any) -> None:  # never list folder contents
+        self.send_error(404, "Not found")
+        return None
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
@@ -244,6 +277,7 @@ def execute_scan(
     raw_target: str,
     *,
     allowed_origins: list[str],
+    allow_loopback: bool = False,
     viewport: str | None = None,
     timeout_s: int | None = None,
     tags: list[str] | None = None,
@@ -263,11 +297,14 @@ def execute_scan(
     timeout = max(5, min(int(timeout_s or DEFAULT_TIMEOUT_S), MAX_TIMEOUT_S))
     kind, local_path = classify_input(raw_target, cwd)
 
-    def _go(scan_url: str, label: str) -> dict[str, Any]:
-        target: Target = validate_target(scan_url, allowed_origins)
+    def _go(scan_url: str, label: str, local_server: bool = False) -> dict[str, Any]:
+        target: Target = validate_target(scan_url, allowed_origins, allow_loopback=allow_loopback,
+                                         local_server=local_server)
         job = {
             "url": target.url,
             "pinned_hosts": target.pinned_hosts,
+            "strict_origins": target.strict_origins,
+            "fallback_executable": image_chromium_executable(),
             "viewport": vp,
             "timeout_s": timeout,
             "tags": list(tags or DEFAULT_TAGS),
@@ -298,4 +335,4 @@ def execute_scan(
     if local_path.is_dir() and not (local_path / "index.html").exists():
         raise ScanError("no_index", f"{local_path} has no index.html; pass the HTML file itself.")
     with serve_directory(root) as base:
-        return _go(f"{base}/{rel}", str(local_path))
+        return _go(f"{base}/{rel}", str(local_path), local_server=True)

@@ -1,8 +1,12 @@
 """Scan-target safety policy.
 
-Default posture: **loopback only**.  A model can never widen it from a tool call -- extra origins are
-authorised exclusively by the human through ``hermes a11y allow <origin>`` (stored in the plugin's
-own settings) -- and even an authorised origin must resolve to public addresses.
+Default posture: **no network targets except authorised public origins**.  Loopback URLs (local
+dev servers, other services on this machine) are refused unless the operator sets
+``allow_loopback: true``; local files/folders are still scanned through the plugin's own ephemeral
+loopback server, pinned to that one origin.  A model can never widen the policy from a tool call --
+extra origins come only from the plugin's ``allowed_origins`` setting (written by an administrator,
+by provisioning, or by the ``a11y allow <origin>`` CLI) -- and even an authorised origin must
+resolve to public addresses (no RFC1918, loopback, link-local/metadata, CGNAT, multicast or reserved).
 
 Hostnames are resolved here, once, validated, and the validated IP is pinned in Chromium by the
 worker (``--host-resolver-rules``).  That closes the DNS-rebinding window.
@@ -39,6 +43,9 @@ class Target:
     origin: str
     pinned_hosts: dict[str, str] = field(default_factory=dict)  # hostname -> validated ip
     loopback: bool = False
+    # When set, the browser may only talk to these exact origins (scheme://host[:port]), not to any
+    # port on a pinned host.  Used for the plugin's own local-file server.
+    strict_origins: list[str] = field(default_factory=list)
 
 
 def normalize_origin(value: str) -> str:
@@ -92,8 +99,14 @@ def resolve_host(host: str) -> list[ipaddress._BaseAddress]:
     return out
 
 
-def validate_target(url: str, allowed_origins: Iterable[str] = ()) -> Target:
-    """Return a pinned, validated target or raise :class:`PolicyError`."""
+def validate_target(url: str, allowed_origins: Iterable[str] = (), *, allow_loopback: bool = False,
+                    local_server: bool = False) -> Target:
+    """Return a pinned, validated target or raise :class:`PolicyError`.
+
+    ``allow_loopback`` re-enables scanning loopback URLs (upstream behaviour; off by default so a
+    hosted workspace cannot be used to probe its own local services).  ``local_server`` marks the
+    plugin's own ephemeral file server, which is always allowed but pinned to its exact origin.
+    """
     if not isinstance(url, str) or not url.strip():
         raise PolicyError("bad_url", "url is required")
     parts = urlsplit(url.strip())
@@ -120,19 +133,26 @@ def validate_target(url: str, allowed_origins: Iterable[str] = ()) -> Target:
 
     # --- loopback targets: always allowed, but must truly resolve to loopback ------------------
     if host in LOOPBACK_NAMES or _literal_loopback(host):
+        if not (allow_loopback or local_server):
+            raise PolicyError(
+                "loopback_refused",
+                f"{origin} is a loopback address. Scanning services on this machine is disabled. "
+                "Scan a local .html file or folder path instead, or an authorised public origin.",
+            )
         ip = "127.0.0.1" if host in LOOPBACK_NAMES else host
         if host in LOOPBACK_NAMES:
             ips = resolve_host(host)
             if not all(_is_loopback_ip(i) for i in ips):
                 raise PolicyError("loopback_hijack", f"{host!r} resolves to a non-loopback address; refusing.")
-        return Target(url=url.strip(), origin=origin, pinned_hosts={host: ip}, loopback=True)
+        return Target(url=url.strip(), origin=origin, pinned_hosts={host: ip}, loopback=True,
+                      strict_origins=[origin] if local_server else [])
 
     # --- remote targets: only human-authorised origins, only public IPs -------------------------
     if origin not in allowed:
         raise PolicyError(
             "origin_not_authorised",
-            f"{origin} is not authorised. A11Y Lens only scans loopback targets by default. "
-            f"If you own it, a human can run: hermes a11y allow {origin}",
+            f"{origin} is not authorised. A11Y Lens only scans local files and origins an administrator "
+            f"has added to the plugin's allowed_origins setting. Ask an administrator to add {origin} if you own it.",
         )
     ips = resolve_host(host)
     bad = [str(i) for i in ips if not _is_public_ip(i)]

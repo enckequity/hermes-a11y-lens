@@ -3,7 +3,7 @@ version: 0.1.0
 description: >-
   Autonomous website accessibility testing and repair verification. Opens a page in a real headless
   Chromium, runs the axe-core engine against the rendered DOM, stores evidence-backed scans, and compares
-  before/after scans so Hermes can prove its fixes in the rendered page. Deterministic engine findings only;
+  before/after scans so the agent can prove its fixes in the rendered page. Deterministic engine findings only;
   never claims WCAG conformance.
 author: "A11Y Lens contributors"
 license: MIT
@@ -20,7 +20,15 @@ config_schema:
   allowed_origins:
     type: list
     default: []
-    description: "Remote origins you own that may be scanned (default: loopback only). Managed with `hermes a11y allow <origin>`."
+    description: "Public origins you own that may be scanned (default: none; local files are always allowed). Set here (plugins.entries.a11y-lens.settings.allowed_origins) or with the `a11y allow <origin>` CLI. Must resolve to public addresses."
+  allow_loopback:
+    type: bool
+    default: false
+    description: "Allow scanning loopback URLs (http://localhost:PORT, 127.0.0.1, [::1]). Off by default so a hosted agent cannot probe services on its own machine. Private, link-local and metadata addresses stay refused either way."
+  allow_browser_install:
+    type: bool
+    default: false
+    description: "Let the `a11y install` CLI download Playwright's Chromium. Off by default; scans never download anything."
   browser_executable:
     type: str
     default: ""

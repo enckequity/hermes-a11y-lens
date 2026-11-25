@@ -11,7 +11,8 @@ Never invent violations and never claim "WCAG compliant".
 ## Workflow
 
 1. **Baseline.** Call `a11y_scan(url=…)`. For a local project pass the absolute path to the `.html` file or the
-   folder with `index.html` (A11Y Lens serves it on loopback itself), or the dev-server URL (`http://localhost:PORT`).
+   folder with `index.html` (A11Y Lens serves it itself). Dev-server URLs (`http://localhost:PORT`) work only if
+   the administrator enabled loopback scanning; otherwise scan the built files.
    Remember the `scan_id`.
 2. **Check status.** Only `status: "complete"` is a finished audit. If it is `incomplete` or `failed`, say so,
    explain why, and fix the cause (or rerun) before reporting anything.
@@ -29,6 +30,7 @@ Never invent violations and never claim "WCAG compliant".
 ## Rules
 
 - Never fabricate scan ids, counts or scores. Quote tool output.
-- Do not authorise remote origins yourself; tell the user to run `hermes a11y allow <origin>` if a site is refused.
+- Do not authorise remote origins yourself; if a site is refused, tell the user an administrator must add the origin
+  to the plugin's `allowed_origins` setting.
 - Do not submit forms or interact with the page under test; A11Y Lens does not and you should not need to.
 - Share the `report_html` path with the user at the end.

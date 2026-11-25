@@ -12,9 +12,16 @@ Safety model
 * Every hostname the page may talk to is resolved ONCE by the parent, validated against the policy,
   and pinned in Chromium via ``--host-resolver-rules`` -- DNS rebinding cannot swap the IP later.
   Every other host resolves to NOTFOUND.
-* A route handler additionally blocks any request whose host is not in the pinned set, which also
-  covers every redirect hop.  Blocked requests are recorded as notes (the page may render differently
+* The resolver pins a host, not a port, so every request is also sent through an unroutable proxy;
+  only the pinned hosts (or, for the local-file server, the one exact host:port) bypass it.  A request
+  or redirect hop to ``http://127.0.0.1:<other port>/`` beside the local-file server therefore never
+  leaves the browser.  Non-proxied WebRTC UDP is off.  Operator ``chromium_args`` cannot override
+  these flags.
+* A route handler additionally blocks any request whose host (or exact origin, for the local-file
+  server) is not allowed.  Blocked requests are recorded as notes (the page may render differently
   than in production) but do not by themselves make the scan incomplete; only genuine coverage gaps do.
+* A redirect hop or frame that still ends up on a non-allowed origin fails the scan, so nothing from
+  it reaches the findings.
 * Service workers are blocked, WebSockets are closed, downloads are refused, dialogs are dismissed,
   permissions are denied.  The worker never types into or submits anything.
 """
@@ -45,6 +52,33 @@ def _host_of(url: str) -> str:
         return (urlsplit(url).hostname or "").lower()
     except ValueError:
         return ""
+
+
+def _origin_of(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        port = parts.port
+    except ValueError:
+        return ""
+    if parts.scheme not in ("http", "https") or not host:
+        return ""
+    netloc = f"[{host}]" if ":" in host else host
+    if port and port != (443 if parts.scheme == "https" else 80):
+        netloc += f":{port}"
+    return f"{parts.scheme}://{netloc}"
+
+
+# Unroutable: ``.invalid`` never resolves (and the resolver rules map it to NOTFOUND anyway).
+BLACKHOLE_PROXY = "http://a11y-lens-blackhole.invalid:9"
+
+
+def _bypass_entry(host: str, origin: str | None) -> str:
+    h = host if ":" not in host or host.startswith("[") else f"[{host}]"
+    if origin:
+        port = urlsplit(origin).port or (443 if origin.startswith("https:") else 80)
+        return f"{h}:{port}"
+    return h
 
 
 def _trim(text: str | None, limit: int) -> str:
@@ -102,6 +136,40 @@ async (opts) => {
 """
 
 
+def _is_ip_literal(h: str) -> bool:
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(h.strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+def chromium_args(job: dict[str, Any]) -> list[str]:
+    """Launch flags that confine the browser to the job's pinned hosts / exact origins."""
+    pinned: dict[str, str] = job["pinned_hosts"]
+    strict_origins = set(job.get("strict_origins") or [])
+    maps = [f"MAP {h} {ip}" for h, ip in pinned.items() if not _is_ip_literal(h)]
+    # IP literals need no resolution; exclude them from the catch-all (route guard still checks them).
+    excludes = [f"EXCLUDE {h.strip('[]')}" for h in pinned if _is_ip_literal(h)]
+    # Everything not explicitly pinned (IP literals included) resolves to NOTFOUND.
+    host_rules = ", ".join(maps + ["MAP * ~NOTFOUND"] + excludes)
+
+    if strict_origins:
+        bypass = [_bypass_entry(_host_of(o), o) for o in sorted(strict_origins)]
+    else:
+        bypass = [_bypass_entry(h, None) for h in sorted(pinned)]
+    # "<-loopback>" removes Chromium's implicit proxy bypass for localhost/127.0.0.1/[::1]; it must come
+    # first, or it also cancels the explicit loopback entries after it.
+    bypass_list = ";".join(["<-loopback>"] + bypass)
+    extra_args = [a for a in (job.get("chromium_args") or [])
+                  if not str(a).startswith(("--proxy", "--host-resolver-rules", "--no-proxy-server", "--host-rules"))]
+    return [f"--host-resolver-rules={host_rules}", f"--proxy-server={BLACKHOLE_PROXY}",
+            f"--proxy-bypass-list={bypass_list}", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--mute-audio", "--disable-extensions"] + extra_args
+
+
 def run(job: dict[str, Any]) -> dict[str, Any]:
     from playwright.sync_api import Error as PWError
     from playwright.sync_api import TimeoutError as PWTimeout
@@ -112,6 +180,13 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
     timeout_ms = int(job["timeout_s"]) * 1000
     pinned: dict[str, str] = job["pinned_hosts"]  # hostname -> validated ip
     allowed_hosts = set(pinned)
+    strict_origins = set(job.get("strict_origins") or [])
+    policy_violations: list[str] = []
+
+    def _allowed(u: str) -> bool:
+        if strict_origins:
+            return _origin_of(u) in strict_origins
+        return _host_of(u) in allowed_hosts
     blocked: list[dict[str, str]] = []
     console_errors: list[str] = []
     notes: list[str] = []
@@ -136,23 +211,7 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
     with open(job["axe_path"], encoding="utf-8") as fh:
         axe_source = fh.read()
 
-    def _is_ip_literal(h: str) -> bool:
-        import ipaddress
-
-        try:
-            ipaddress.ip_address(h)
-            return True
-        except ValueError:
-            return False
-
-    maps = [f"MAP {h} {ip}" for h, ip in pinned.items() if not _is_ip_literal(h)]
-    # IP literals need no resolution; exclude them from the catch-all (route guard still checks them).
-    excludes = [f"EXCLUDE {h.strip('[]')}" for h in pinned if _is_ip_literal(h)]
-    # Everything not explicitly pinned resolves to NOTFOUND.
-    host_rules = ", ".join(maps + ["MAP * ~NOTFOUND"] + excludes)
-
-    args = [f"--host-resolver-rules={host_rules}", "--mute-audio", "--disable-extensions"]
-    args += list(job.get("chromium_args") or [])
+    args = chromium_args(job)
 
     with sync_playwright() as pw:
         launch_kwargs: dict[str, Any] = {"headless": True, "args": args}
@@ -166,8 +225,14 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
         launch_errors: list[str] = []
         attempts: list[dict[str, Any]] = [launch_kwargs]
         if not exe and not channel:
-            # Managed Chromium first, then locally installed Chrome / Edge.
-            attempts = [dict(launch_kwargs)] + [dict(launch_kwargs, channel=c) for c in ("chrome", "msedge")]
+            # Already-installed browsers only (launch never downloads): Playwright's managed headless
+            # shell, its managed full Chromium (images often stage only this one), an image-recorded
+            # Chromium binary, then locally installed Chrome / Edge.
+            attempts = [dict(launch_kwargs), dict(launch_kwargs, channel="chromium")]
+            fallback = job.get("fallback_executable")
+            if fallback:
+                attempts.append(dict(launch_kwargs, executable_path=fallback))
+            attempts += [dict(launch_kwargs, channel=c) for c in ("chrome", "msedge")]
         for kw in attempts:
             try:
                 browser = pw.chromium.launch(**kw)
@@ -177,8 +242,9 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
         if browser is None:
             result["error"] = {
                 "code": "browser_unavailable",
-                "message": "No usable Chromium/Chrome/Edge found. Run `hermes a11y install` "
-                "(downloads Playwright's Chromium) or set plugins.entries.a11y-lens.settings.browser_executable.",
+                "message": "No usable Chromium/Chrome/Edge is installed. A11Y Lens never downloads a browser "
+                "during a scan; an administrator must provide one (set the browser_executable setting, "
+                "or install Playwright's Chromium in the environment).",
                 "details": launch_errors,
             }
             return result
@@ -207,17 +273,23 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
             context.set_default_navigation_timeout(timeout_ms)
 
             def guard(route, request):  # noqa: ANN001
-                host = _host_of(request.url)
                 scheme = urlsplit(request.url).scheme
                 if scheme in ("data", "blob", "about"):
                     return route.continue_()
-                if scheme not in ("http", "https") or host not in allowed_hosts:
+                if scheme not in ("http", "https") or not _allowed(request.url):
                     if len(blocked) < 200:
                         blocked.append({"url": _trim(request.url, 200), "type": request.resource_type})
                     return route.abort("blockedbyclient")
                 return route.continue_()
 
             context.route("**/*", guard)
+
+            def watch(request):  # noqa: ANN001 - redirect hops bypass route(); the proxy stops them, this records them
+                if request.redirected_from is not None and urlsplit(request.url).scheme in ("http", "https") \
+                        and not _allowed(request.url) and len(policy_violations) < 50:
+                    policy_violations.append(_trim(request.url, 200))
+
+            context.on("request", watch)
             try:  # WebSockets bypass route(); refuse them (older Playwright: best effort).
                 context.route_web_socket("**/*", lambda ws: ws.close())
             except Exception:  # noqa: BLE001
@@ -251,7 +323,7 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
                 return result
 
             final_host = _host_of(page.url)
-            if final_host not in allowed_hosts:
+            if not _allowed(page.url):
                 result["error"] = {"code": "redirected_off_origin", "message": f"Navigation ended on non-authorised host {final_host!r}."}
                 return result
 
@@ -270,6 +342,16 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
                 "lang": page.evaluate("document.documentElement.getAttribute('lang')"),
                 "viewport": vp,
             }
+
+            # Nothing from a non-allowed origin may reach the findings: fail on a redirect hop or a frame
+            # that left the allowed origins (the proxy should already have stopped the request).
+            off = [f.url for f in page.frames
+                   if urlsplit(f.url).scheme in ("http", "https") and not _allowed(f.url)]
+            if policy_violations or off:
+                result["error"] = {"code": "blocked_by_policy",
+                                   "message": "The page redirected or framed a non-authorised address; scan refused.",
+                                   "details": [_trim(u, 200) for u in (policy_violations + off)[:10]]}
+                return result
 
             # Inject axe into every frame so iframes are audited too; track any we cannot reach.
             frames = page.frames

@@ -1,4 +1,4 @@
-"""Hermes-facing tool schemas and handlers.  Handlers never raise and always return a JSON string."""
+"""Agent-facing tool schemas and handlers.  Handlers never raise and always return a JSON string."""
 
 from __future__ import annotations
 
@@ -22,9 +22,10 @@ SCAN_SCHEMA = {
     "description": (
         "Audit a web page for accessibility (WCAG) problems by opening it in a REAL headless Chromium and running "
         "the axe-core engine against the rendered DOM. Findings are deterministic engine output with CSS selectors, "
-        "HTML snippets and measured evidence (e.g. contrast ratios) - never guessed. `url` may be a localhost URL "
-        "(http://localhost:3000), or a local .html file / folder path (A11Y Lens serves it on a temporary loopback "
-        "server for the scan). Remote sites are refused unless a human authorised the origin with `hermes a11y allow`. "
+        "HTML snippets and measured evidence (e.g. contrast ratios) - never guessed. `url` may be a local .html file or "
+        "folder path (A11Y Lens serves it on a temporary private server for the scan), or an http(s) URL on an origin "
+        "an administrator authorised. Other sites, localhost and private network addresses are refused unless the "
+        "administrator enabled them. "
         "Returns a scan_id, severity counts, top findings with selectors and fix patterns, and paths to a JSON and an "
         "HTML report. A scan with status other than 'complete' is NOT a finished audit and must be reported as such. "
         "Never claims WCAG conformance. After fixing code with your normal file tools, call a11y_scan again on the "
@@ -33,7 +34,7 @@ SCAN_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "url": {"type": "string", "description": "http(s) URL on localhost, an authorised origin, or an absolute path to an .html file or a folder containing index.html."},
+            "url": {"type": "string", "description": "http(s) URL on an authorised origin, or an absolute path to an .html file or a folder containing index.html."},
             "viewport": {"type": "string", "description": "'desktop' (1280x800, default), 'mobile' (390x844) or 'WIDTHxHEIGHT'. Use the same viewport for before/after scans."},
             "timeout_s": {"type": "integer", "description": "Page-load budget in seconds (5-120, default 45). A hard process-level limit is enforced on top."},
             "note": {"type": "string", "description": "Optional short label stored with the scan, e.g. 'baseline' or 'after fixing buttons'."},
@@ -114,7 +115,14 @@ class Runtime:
         get = (lambda k, d: ctx.get_config(k, default=d)) if ctx is not None else (lambda k, d: d)
 
         def _list(v: Any) -> list[str]:
-            return [str(x) for x in v] if isinstance(v, (list, tuple)) else []
+            if isinstance(v, str):  # provisioning may write "https://a.example, https://b.example"
+                v = v.replace("\n", ",").split(",")
+            return [str(x).strip() for x in v if str(x).strip()] if isinstance(v, (list, tuple)) else []
+
+        def _bool(v: Any) -> bool:  # fail closed: only an explicit true enables
+            if isinstance(v, bool):
+                return v
+            return str(v).strip().lower() in ("1", "true", "yes", "on")
 
         def _int(v: Any, d: int) -> int:
             try:
@@ -124,6 +132,8 @@ class Runtime:
 
         return service.Settings(
             allowed_origins=_list(get("allowed_origins", [])),
+            allow_loopback=_bool(get("allow_loopback", False)),
+            allow_browser_install=_bool(get("allow_browser_install", False)),
             browser_executable=str(get("browser_executable", "") or ""),
             browser_channel=str(get("browser_channel", "") or ""),
             chromium_args=_list(get("chromium_args", [])),

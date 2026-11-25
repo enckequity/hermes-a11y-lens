@@ -2,7 +2,7 @@
 
 | Threat | Mitigation | Test |
 |---|---|---|
-| Model scans internal/cloud-metadata hosts (SSRF) | Loopback only by default; remote origins need `hermes a11y allow` by a human; non-public IPs (RFC1918, link-local/169.254.*, CGNAT, loopback, multicast, reserved) refused even for authorised origins | `test_policy.py` |
+| Model scans internal/cloud-metadata hosts (SSRF) | Local files and authorised origins only by default (loopback URLs need `allow_loopback: true`); remote origins need an administrator (`allowed_origins` setting or `a11y allow`); the browser is pinned to the target's host (exact port for local files) by resolver rules plus an unroutable proxy, so redirect hops cannot reach other local ports; non-public IPs (RFC1918, link-local/169.254.*, CGNAT, loopback, multicast, reserved) refused even for authorised origins | `test_policy.py`, `test_hosted_safety.py` |
 | DNS rebinding | Resolve once, validate all A/AAAA records, pin the IP in Chromium via `--host-resolver-rules`; everything else → NOTFOUND | `test_dns_rebinding_to_private_refused`, `test_localhost_name_hijacked_to_public_ip_refused` |
 | Redirect to a forbidden host | Route guard sees every hop; final host re-checked | `test_redirect_off_origin_is_blocked` |
 | Page pulls third-party resources | Only pinned hosts may be contacted; blocked requests are recorded and shown in the report | `test_offorigin_subresources_blocked_and_disclosed` |

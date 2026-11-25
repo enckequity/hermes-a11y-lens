@@ -55,12 +55,30 @@ Also: a `/a11y` slash command, `hermes a11y …` CLI (`install`, `doctor`, `scan
 - **Regression detection that survives edits.** Elements are matched by rule + selector, then normalised HTML, then tag + text, each element at most once, so a fix that shifts selectors isn't misreported as "fixed one, broke one". Every "remaining" item says which pass matched it.
 - **Persistent history** in SQLite via Hermes' plugin storage; reports are self-contained HTML (and pass the checks they describe: landmarks, real headings, AA contrast in light/dark mode, text labels instead of colour-only severity).
 
+## Settings (provisioning)
+
+All settings live under `plugins.entries.a11y-lens.settings` in `config.yaml`, so provisioning can set them without the CLI:
+
+```yaml
+plugins:
+  entries:
+    a11y-lens:
+      settings:
+        allowed_origins: ["https://staging.example.com"]   # same list `a11y allow <origin>` edits
+        allow_loopback: false          # default; true restores upstream localhost scanning
+        allow_browser_install: false   # default; true lets `a11y install` download Chromium
+        browser_executable: ""         # optional explicit Chromium path
+```
+
+`allowed_origins` also accepts a comma-separated string. Origins are normalised (`https://Example.com:443/x` -> `https://example.com`), and must still resolve to public addresses.
+
 ## Safety model (details in [docs/SAFETY.md](docs/SAFETY.md))
 
-- **Loopback only by default.** Remote sites need a *human* to run `hermes a11y allow https://staging.example.com`; the model cannot widen the allow-list from a tool call.
+- **Local files and authorised public origins only, by default.** Loopback URLs (`localhost:PORT`) are refused unless `allow_loopback: true`; private (RFC1918), link-local/metadata, CGNAT and reserved addresses are always refused, after DNS resolution and for every redirect hop or frame (Chromium resolves only pinned hosts, and an unroutable proxy pins the local-file server to its exact port). Remote sites need an administrator to authorise the origin; the model cannot widen the allow-list from a tool call.
+- **No downloads at scan time.** Scans use an already-installed browser only (Playwright's headless shell, its full Chromium via `channel="chromium"`, `/etc/hermes/chromium-executable-path`, then Chrome/Edge). `a11y install` downloads only when `allow_browser_install: true`.
 - **SSRF / DNS-rebinding guard.** Hostnames are resolved once, validated (public IPs only for remote targets), and pinned inside Chromium with `--host-resolver-rules`; every other host resolves to NOTFOUND, redirects and sub-resources to non-pinned hosts are blocked and *recorded in the report*.
 - **Isolated worker process** with a hard kill timeout, stripped environment (no API keys), service workers blocked, WebSockets closed, downloads refused, dialogs dismissed, **forms are never submitted, nothing is typed or clicked**.
-- Local-file mode serves only `.html` pages' own folder on `127.0.0.1`, refuses symlink/`..` escapes, `/`, your home directory and top-level system folders.
+- Local-file mode serves only `.html` pages' own folder on `127.0.0.1` (pinned to that exact port; only static web assets, no dotfiles, no directory listings), refuses symlink/`..` escapes, `/`, your home directory and top-level system folders.
 - No credentials in URLs, no cookies/profile, evidence stays on your machine.
 - axe-core is vendored and **SHA-256-checked before every scan**.
 

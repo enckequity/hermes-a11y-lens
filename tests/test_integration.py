@@ -6,6 +6,8 @@ import socket
 import threading
 from pathlib import Path
 
+import dataclasses
+
 import pytest
 from a11y_lens import service
 
@@ -106,6 +108,11 @@ def test_review_items_not_counted_as_violations(store, settings, tmp_path):
 
 
 # ---------------------------------------------------------------- failure and safety boundaries
+def lb(settings):
+    """These tests scan throwaway loopback servers, which needs the opt-in upstream behaviour."""
+    return dataclasses.replace(settings, allow_loopback=True)
+
+
 class _Srv:
     def __init__(self, handler):
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -135,7 +142,7 @@ def html(body):
 def test_http_404_is_failed_not_complete(store, settings):
     s = _Srv(handler_factory({}))
     try:
-        res = scan(store, settings, f"http://127.0.0.1:{s.port}/missing")
+        res = scan(store, lb(settings), f"http://127.0.0.1:{s.port}/missing")
     finally:
         s.close()
     assert res["status"] == "failed" and res["error"]["code"] == "http_error" and not res["ok"]
@@ -148,7 +155,7 @@ def test_redirect_off_origin_is_blocked(store, settings):
         h.send_response(302); h.send_header("Location", "http://127.0.0.2:9/"); h.end_headers()
     s = _Srv(handler_factory({"/": redirect}))
     try:
-        res = scan(store, settings, f"http://127.0.0.1:{s.port}/")
+        res = scan(store, lb(settings), f"http://127.0.0.1:{s.port}/")
     finally:
         s.close()
     assert res["status"] == "failed" and res["error"]["code"] in ("blocked_by_policy", "navigation_failed", "redirected_off_origin")
@@ -158,7 +165,7 @@ def test_offorigin_subresources_blocked_and_disclosed(store, settings):
     page = '<!doctype html><html lang="en"><head><title>t</title></head><body><main><h1>x</h1><img src="http://example.invalid/a.png" alt="a"></main></body></html>'
     s = _Srv(handler_factory({"/": html(page)}))
     try:
-        res = scan(store, settings, f"http://127.0.0.1:{s.port}/")
+        res = scan(store, lb(settings), f"http://127.0.0.1:{s.port}/")
     finally:
         s.close()
     assert res["status"] == "complete" and any("blocked" in w for w in res["warnings"])
@@ -170,7 +177,7 @@ def test_hung_server_times_out_as_failed(store, settings):
     lsock = socket.socket(); lsock.bind(("127.0.0.1", 0)); lsock.listen(5)
     port = lsock.getsockname()[1]
     try:
-        res = scan(store, settings, f"http://127.0.0.1:{port}/", timeout_s=5)
+        res = scan(store, lb(settings), f"http://127.0.0.1:{port}/", timeout_s=5)
     finally:
         lsock.close()
     assert res["status"] == "failed" and res["error"]["code"] in ("navigation_timeout", "scan_timeout")
@@ -183,7 +190,7 @@ def test_dialogs_and_downloads_do_not_hang_or_act(store, settings):
     def submit(h): hits.append(1); html("ok")(h)
     s = _Srv(handler_factory({"/": html(page), "/submit": submit}))
     try:
-        res = scan(store, settings, f"http://127.0.0.1:{s.port}/")
+        res = scan(store, lb(settings), f"http://127.0.0.1:{s.port}/")
     finally:
         s.close()
     assert res["status"] == "complete" and hits == []  # forms are never submitted
@@ -213,4 +220,5 @@ def test_missing_browser_gives_actionable_error(store, tmp_path):
     p = tmp_path / "proj"; p.mkdir(); (p / "index.html").write_text("<html><body>x</body></html>")
     res = service.scan(store, service.Settings(browser_executable="/nonexistent/chrome"), str(p / "index.html"))
     assert res["status"] == "failed" and res["error"]["code"] == "browser_unavailable"
-    assert "hermes a11y install" in res["error"]["message"]
+    msg = res["error"]["message"]
+    assert "browser_executable" in msg and "never downloads" in msg and "hermes" not in msg.lower()
