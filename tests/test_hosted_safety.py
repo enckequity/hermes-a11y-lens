@@ -266,3 +266,29 @@ def test_strict_origin_redirect_hop_to_same_host_other_port_is_stopped(settings)
         target.close(); victim.close()
     assert victim.hits == []
     assert "INTERNAL-SECRET" not in str(res)
+
+
+
+def test_folder_requests_never_serve_an_index_link(tmp_path):
+    site = tmp_path / "site"
+    (site / "x").mkdir(parents=True)
+    (site / "index.html").write_text("<html><body>ok</body></html>")
+    secret = tmp_path / "secret.html"
+    secret.write_text("TOKEN=abc")
+    (site / "x" / "index.html").symlink_to(secret)
+    with runner.serve_directory(site) as base:
+        assert b"ok" in urllib.request.urlopen(f"{base}/index.html").read()
+        for path in ("/x/", "/x", "/", "/x/index.html"):
+            with pytest.raises(urllib.error.HTTPError):
+                urllib.request.urlopen(base + path).read()
+
+
+def test_operator_chromium_args_cannot_loosen_confinement():
+    from a11y_lens import worker
+
+    args = worker.chromium_args({"pinned_hosts": {"example.com": "93.184.216.34"}, "chromium_args": [
+        "-proxy-server=direct://", "--force-webrtc-ip-handling-policy=default", "-no-proxy-server", "--lang=en"]})
+    assert "--lang=en" in args
+    assert not any(a.startswith(("-proxy-server", "-no-proxy")) for a in args)
+    assert args.count("--force-webrtc-ip-handling-policy=disable_non_proxied_udp") == 1
+    assert "--force-webrtc-ip-handling-policy=default" not in args

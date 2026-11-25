@@ -163,8 +163,10 @@ def chromium_args(job: dict[str, Any]) -> list[str]:
     # "<-loopback>" removes Chromium's implicit proxy bypass for localhost/127.0.0.1/[::1]; it must come
     # first, or it also cancels the explicit loopback entries after it.
     bypass_list = ";".join(["<-loopback>"] + bypass)
-    extra_args = [a for a in (job.get("chromium_args") or [])
-                  if not str(a).startswith(("--proxy", "--host-resolver-rules", "--no-proxy-server", "--host-rules"))]
+    # Chromium accepts one or two dashes and the last duplicate wins, so compare without dashes and drop every confining switch.
+    confining = ("proxy", "host-resolver-rules", "no-proxy-server", "host-rules", "force-webrtc-ip-handling-policy",
+                 "webrtc-ip-handling-policy")
+    extra_args = [a for a in (job.get("chromium_args") or []) if not str(a).lstrip("-").startswith(confining)]
     return [f"--host-resolver-rules={host_rules}", f"--proxy-server={BLACKHOLE_PROXY}",
             f"--proxy-bypass-list={bypass_list}", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             "--mute-audio", "--disable-extensions"] + extra_args

@@ -136,7 +136,7 @@ class Runtime:
             allow_browser_install=_bool(get("allow_browser_install", False)),
             browser_executable=str(get("browser_executable", "") or ""),
             browser_channel=str(get("browser_channel", "") or ""),
-            chromium_args=_list(get("chromium_args", [])),
+            chromium_args=[str(x) for x in (get("chromium_args", []) or []) if isinstance(get("chromium_args", []), (list, tuple)) and str(x).strip()],
             default_timeout_s=_int(get("default_timeout_s", 45), 45),
             keep_scans=_int(get("keep_scans", 100), 100),
         )

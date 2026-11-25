@@ -118,6 +118,10 @@ class _ContainedHandler(http.server.SimpleHTTPRequestHandler):
             return forbidden
         if os.path.isfile(resolved) and os.path.splitext(resolved)[1].lower() not in SERVED_SUFFIXES:
             return forbidden
+        # Files only: for a folder the standard library would open its index.html itself, without these checks, so a
+        # linked index could serve any file on the host. Scans of a folder request its index.html by name.
+        if os.path.isdir(resolved):
+            return forbidden
         # Windows: case-insensitive filesystem; normcase makes containment check correct on Windows
         # while preserving POSIX behavior (normcase is a no-op there).
         if os.path.normcase(resolved) == os.path.normcase(base):
@@ -331,7 +335,7 @@ def execute_scan(
 
     assert local_path is not None
     root = local_path if local_path.is_dir() else local_path.parent
-    rel = "" if local_path.is_dir() else local_path.name
+    rel = "index.html" if local_path.is_dir() else local_path.name
     if local_path.is_dir() and not (local_path / "index.html").exists():
         raise ScanError("no_index", f"{local_path} has no index.html; pass the HTML file itself.")
     with serve_directory(root) as base:
